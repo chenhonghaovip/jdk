@@ -1,33 +1,5 @@
 /*
  * ORACLE PROPRIETARY/CONFIDENTIAL. Use is subject to license terms.
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- */
-
-/*
- *
- *
- *
- *
- *
  * Written by Doug Lea with assistance from members of JCP JSR-166
  * Expert Group and released to the public domain, as explained at
  * http://creativecommons.org/publicdomain/zero/1.0/
@@ -39,37 +11,11 @@ import java.io.ObjectStreamField;
 import java.io.Serializable;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
-import java.util.AbstractMap;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.Hashtable;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Set;
-import java.util.Spliterator;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ForkJoinPool;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
-import java.util.function.BinaryOperator;
-import java.util.function.Consumer;
-import java.util.function.DoubleBinaryOperator;
-import java.util.function.Function;
-import java.util.function.IntBinaryOperator;
-import java.util.function.LongBinaryOperator;
-import java.util.function.ToDoubleBiFunction;
-import java.util.function.ToDoubleFunction;
-import java.util.function.ToIntBiFunction;
-import java.util.function.ToIntFunction;
-import java.util.function.ToLongBiFunction;
-import java.util.function.ToLongFunction;
+import java.util.function.*;
 import java.util.stream.Stream;
 
 /**
@@ -1006,63 +952,118 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
         return putVal(key, value, false);
     }
 
-    /** Implementation for put and putIfAbsent */
+    /**
+     * 当添加一对键值对的时候，首先会去判断保存这些键值对的数组是不是初始化了，
+     * 如果没有的话就初始化数组
+     *  然后通过计算hash值来确定放在数组的哪个位置
+     * 如果这个位置为空则直接添加，如果不为空的话，则取出这个节点来
+     * 如果取出来的节点的hash值是MOVED(-1)的话，则表示当前正在对这个数组进行扩容，复制到新的数组，则当前线程也去帮助复制
+     * 最后一种情况就是，如果这个节点，不为空，也不在扩容，则通过synchronized来加锁，进行添加操作
+     *    然后判断当前取出的节点位置存放的是链表还是树
+     *    如果是链表的话，则遍历整个链表，直到取出来的节点的key来个要放的key进行比较，如果key相等，并且key的hash值也相等的话，
+     *          则说明是同一个key，则覆盖掉value，否则的话则添加到链表的末尾
+     *    如果是树的话，则调用putTreeVal方法把这个元素添加到树中去
+     *  最后在添加完成之后，会判断在该节点处共有多少个节点（注意是添加前的个数），如果达到8个以上了的话，
+     *  则调用treeifyBin方法来尝试将处的链表转为树，或者扩容数组
+     */
     final V putVal(K key, V value, boolean onlyIfAbsent) {
-        if (key == null || value == null) throw new NullPointerException();
+        //ConcurrentHashMap的key,value不能为空，否则的话跑出异常
+        if (key == null || value == null) {
+            throw new NullPointerException();
+        }
+        //获取key的hash值
         int hash = spread(key.hashCode());
+        //用来计算在这个节点总共有多少个元素，用来控制扩容或者转移为树
         int binCount = 0;
+        //循环处理key,value信息，直到处理完成
         for (Node<K,V>[] tab = table;;) {
             Node<K,V> f; int n, i, fh;
-            if (tab == null || (n = tab.length) == 0)
+            //初次put时，对数组进行初始化处理
+            if (tab == null || (n = tab.length) == 0) {
                 tab = initTable();
-            else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {
-                if (casTabAt(tab, i, null,
-                             new Node<K,V>(hash, key, value, null)))
-                    break;                   // no lock when adding to empty bin
             }
-            else if ((fh = f.hash) == MOVED)
+            ////通过哈希计算出一个表中的位置: 因为n是数组的长度，所以(n-1)&hash肯定不会出现数组越界
+            else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {
+                //如果这个位置没有元素的话，则通过cas的方式尝试添加新的Node节点，注意这个时候是没有加锁的
+                if (casTabAt(tab, i, null, new Node<K,V>(hash, key, value, null))) {
+                    break;                   // no lock when adding to empty bin
+                }
+            }
+            /*
+             * 如果检测到某个节点的hash值是MOVED，则表示正在进行数组扩张的数据复制阶段，
+             * 则当前线程也会参与去复制，通过允许多线程复制的功能，一次来减少数组的复制所带来的性能损失
+             */
+            else if ((fh = f.hash) == MOVED) {
                 tab = helpTransfer(tab, f);
-            else {
+            } else {
                 V oldVal = null;
+                /*
+                 * 如果在这个位置有元素的话，就采用synchronized的方式加锁，
+                 *     如果是链表的话(hash大于0)，就对这个链表的所有元素进行遍历，
+                 *         如果找到了key和key的hash值都一样的节点，则把它的值替换到
+                 *         如果没找到的话，则添加在链表的最后面
+                 *  否则，是树的话，则调用putTreeVal方法添加到树中去
+                 *
+                 *  在添加完之后，会对该节点上关联的的数目进行判断，
+                 *  如果在8个以上的话，则会调用treeifyBin方法，来尝试转化为树，或者是扩容
+                 */
                 synchronized (f) {
+                    /*
+                     *再次取出要存储的位置的元素，跟前面取出来的比较，判断是否再过程中位置发生变化
+                     *  如果首次取出之后，发生了扩容并完成，会导致元素不一致，所以再次判断元素是否一致是必要的
+                     *  若是不一致，再次循环处理插入
+                     */
                     if (tabAt(tab, i) == f) {
+                        //取出来的元素的hash值大于0(链表类型的节点hash值大于0)，当转换为树之后，hash值为-2
                         if (fh >= 0) {
                             binCount = 1;
+                            //遍历链表
                             for (Node<K,V> e = f;; ++binCount) {
                                 K ek;
+                                //若链表首节点hash值和key的hash值相等且内容相同，替换value值，并跳出循环
                                 if (e.hash == hash &&
-                                    ((ek = e.key) == key ||
-                                     (ek != null && key.equals(ek)))) {
+                                        ((ek = e.key) == key ||
+                                                (key.equals(ek)))) {
                                     oldVal = e.val;
-                                    if (!onlyIfAbsent)
+                                    if (!onlyIfAbsent) {
                                         e.val = value;
+                                    }
                                     break;
                                 }
                                 Node<K,V> pred = e;
+                                //若该节点为最后节点，直接在该节点之后新增节点，放入K，V值，并设置新节点的next = null
                                 if ((e = e.next) == null) {
                                     pred.next = new Node<K,V>(hash, key,
-                                                              value, null);
+                                            value, null);
                                     break;
                                 }
                             }
                         }
+                        //如果节点类型为TreeBin，表示已经转化成红黑树类型了
                         else if (f instanceof TreeBin) {
                             Node<K,V> p;
                             binCount = 2;
+                            //将f节点转为TreeBin类型，将该元素添加到树中去
                             if ((p = ((TreeBin<K,V>)f).putTreeVal(hash, key,
                                                            value)) != null) {
                                 oldVal = p.val;
-                                if (!onlyIfAbsent)
+                                //onlyIfAbsent为false
+                                if (!onlyIfAbsent) {
                                     p.val = value;
+                                }
                             }
                         }
                     }
                 }
                 if (binCount != 0) {
-                    if (binCount >= TREEIFY_THRESHOLD)
+                    //当在同一个节点的数目达到8个的时候，则扩张数组或将给节点的数据转为tree
+                    if (binCount >= TREEIFY_THRESHOLD) {
                         treeifyBin(tab, i);
-                    if (oldVal != null)
+                    }
+                    //存在相同key时，返回旧值，否则返回空
+                    if (oldVal != null) {
                         return oldVal;
+                    }
                     break;
                 }
             }
@@ -2611,8 +2612,14 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     private final void treeifyBin(Node<K,V>[] tab, int index) {
         Node<K,V> b; int n, sc;
         if (tab != null) {
-            if ((n = tab.length) < MIN_TREEIFY_CAPACITY)
+            //当数组长度小于64时，进行数组扩容，而不是红黑树转换
+            if ((n = tab.length) < MIN_TREEIFY_CAPACITY) {
                 tryPresize(n << 1);
+            }
+            /*
+             *如果数组长度>=64时,且此时首节点非空且为链表类型，使用synchronized同步器，将该节点出的链表转为树
+             * if判断的目的是防止其他线程已经完成红黑树转换，导致转换问题（多线程）
+             */
             else if ((b = tabAt(tab, index)) != null && b.hash >= 0) {
                 synchronized (b) {
                     if (tabAt(tab, index) == b) {
