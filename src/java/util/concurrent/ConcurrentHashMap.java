@@ -2625,15 +2625,18 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                     if (tabAt(tab, index) == b) {
                         TreeNode<K,V> hd = null, tl = null;
                         for (Node<K,V> e = b; e != null; e = e.next) {
+                            //将链表节点转换为红黑树节点，并链接为顺序相同的双向链表
                             TreeNode<K,V> p =
                                 new TreeNode<K,V>(e.hash, e.key, e.val,
                                                   null, null);
-                            if ((p.prev = tl) == null)
+                            //设置hd为头节点
+                           if ((p.prev = tl) == null)
                                 hd = p;
                             else
                                 tl.next = p;
                             tl = p;
                         }
+                        //把TreeNode的链表放入容器TreeBin中
                         setTabAt(tab, index, new TreeBin<K,V>(hd));
                     }
                 }
