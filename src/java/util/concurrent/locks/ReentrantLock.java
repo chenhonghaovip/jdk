@@ -34,8 +34,9 @@
  */
 
 package java.util.concurrent.locks;
-import java.util.concurrent.TimeUnit;
+
 import java.util.Collection;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A reentrant mutual exclusion {@link Lock} with the same basic
@@ -127,14 +128,17 @@ public class ReentrantLock implements Lock, java.io.Serializable {
          * subclasses, but both need nonfair try for trylock method.
          */
         final boolean nonfairTryAcquire(int acquires) {
+            //获取当前尝试加锁的线程名称和当前锁的status
             final Thread current = Thread.currentThread();
             int c = getState();
+            //如果此时锁已经释放，cas加锁并设置排他线程，返回true
             if (c == 0) {
                 if (compareAndSetState(0, acquires)) {
                     setExclusiveOwnerThread(current);
                     return true;
                 }
             }
+            //判断当前锁的排他线程是否是当前尝试加锁的线程，若相等，表明可重入锁，state + 1;
             else if (current == getExclusiveOwnerThread()) {
                 int nextc = c + acquires;
                 if (nextc < 0) // overflow
@@ -142,6 +146,7 @@ public class ReentrantLock implements Lock, java.io.Serializable {
                 setState(nextc);
                 return true;
             }
+            //否则返回false
             return false;
         }
 
@@ -203,9 +208,12 @@ public class ReentrantLock implements Lock, java.io.Serializable {
          * acquire on failure.
          */
         final void lock() {
+            //利用cas设置state为1，表示锁被占用
             if (compareAndSetState(0, 1))
+                //设置排他线程为当前线程，表示当前线程占有锁
                 setExclusiveOwnerThread(Thread.currentThread());
             else
+                //尝试获取锁
                 acquire(1);
         }
 
