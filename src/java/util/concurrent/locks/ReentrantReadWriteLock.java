@@ -483,30 +483,41 @@ public class ReentrantReadWriteLock
              */
             Thread current = Thread.currentThread();
             int c = getState();
-            //存在独占锁且不为当前线程独占，返回
+            //存在独占锁且不为当前线程独占，返回-1，表示抢锁失败
             if (exclusiveCount(c) != 0 &&
                 getExclusiveOwnerThread() != current)
                 return -1;
+            //不存在独占锁 或 或独占锁是当前线程
             //获取共享锁线程数量
             int r = sharedCount(c);
-            if (!readerShouldBlock() &&
-                r < MAX_COUNT &&
-                compareAndSetState(c, c + SHARED_UNIT)) {
+            if (!readerShouldBlock() && r < MAX_COUNT && compareAndSetState(c, c + SHARED_UNIT)) {
+                //若读锁为0，加锁成功
                 if (r == 0) {
+                    // 将当前线程设置为第一个读锁线程
                     firstReader = current;
+                    // 计数器为1
                     firstReaderHoldCount = 1;
-                } else if (firstReader == current) {
+                }
+                //如果读锁不是空闲的，且第一个读线程是当前线程。获取锁成功。
+                else if (firstReader == current) {
+                    // 计数器加1
                     firstReaderHoldCount++;
-                } else {
+                }
+                else {
+                    // cachedHoldCounter 代表的是最后一个获取读锁的线程的计数器。
                     HoldCounter rh = cachedHoldCounter;
+                    // 如果最后一个线程计数器是 null 或者不是当前线程，那么就新建一个 HoldCounter 对象
                     if (rh == null || rh.tid != getThreadId(current))
+                        // 给当前线程新建一个 HoldCounter
                         cachedHoldCounter = rh = readHolds.get();
+                    // 如果不是 null，且 count 是 0，就将上个线程的 HoldCounter 覆盖本地的。
                     else if (rh.count == 0)
                         readHolds.set(rh);
                     rh.count++;
                 }
                 return 1;
             }
+            // 死循环获取读锁。包含锁降级策略。
             return fullTryAcquireShared(current);
         }
 
@@ -524,12 +535,15 @@ public class ReentrantReadWriteLock
             HoldCounter rh = null;
             for (;;) {
                 int c = getState();
+                //若写锁不等于0，并且不是当前线程，获取锁失败
                 if (exclusiveCount(c) != 0) {
                     if (getExclusiveOwnerThread() != current)
                         return -1;
                     // else we hold the exclusive lock; blocking here
                     // would cause deadlock.
-                } else if (readerShouldBlock()) {
+                }
+                // 如果写锁空闲，且可以获取读锁。
+                else if (readerShouldBlock()) {
                     // Make sure we're not acquiring read lock reentrantly
                     if (firstReader == current) {
                         // assert firstReaderHoldCount > 0;
