@@ -13,7 +13,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class MapTest {
     public static void main(String[] args) {
         ConcurrentHashMap<String,String> concurrentHashMap = new ConcurrentHashMap<>(4);
-        String value = concurrentHashMap.put("1","11");
+        String value = concurrentHashMap.put("1","1d1");
         System.out.println(value);
         value = concurrentHashMap.put("5","22");
         System.out.println(value);
