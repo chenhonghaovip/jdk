@@ -24,7 +24,8 @@
  */
 
 package java.lang;
-import java.lang.ref.*;
+
+import java.lang.ref.WeakReference;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -197,8 +198,11 @@ public class ThreadLocal<T> {
      *        this thread-local.
      */
     public void set(T value) {
+        //1.获取当前调用的线程
         Thread t = Thread.currentThread();
+        //2.获取当前线程的ThreadLocalMap
         ThreadLocalMap map = getMap(t);
+        // 如果该线程已经存在ThreadLocalMap ，则替换该ThreadLocal本身的值，否则创建新的ThreadLocalMap并且将键值对放入新的ThreadLocalMap中
         if (map != null)
             map.set(this, value);
         else

@@ -602,7 +602,7 @@ public abstract class AbstractQueuedSynchronizer
 
     /**
      * Creates and enqueues node for current thread and given mode.
-     *
+     * 创建节点并且添加到队列的末尾
      * @param mode Node.EXCLUSIVE for exclusive, Node.SHARED for shared
      * @return the new node
      */
@@ -649,6 +649,7 @@ public abstract class AbstractQueuedSynchronizer
          * If status is negative (i.e., possibly needing signal) try
          * to clear in anticipation of signalling.  It is OK if this
          * fails or if status is changed by waiting thread.
+         * 负值表示结点处于有效等待状态，而正值表示结点已被取消。所以源码中很多地方用>0、<0来判断结点的状态是否正常。
          */
         int ws = node.waitStatus;
         if (ws < 0) {
@@ -816,7 +817,7 @@ public abstract class AbstractQueuedSynchronizer
             return true;
         if (ws > 0) {
             /*
-             * 前继节点是CANCELLED ,则需要充同步队列中删除,并检测新接上的前继节点的状态,若还是为CANCELLED ,还需要重复上述步骤
+             * 前继节点是CANCELLED ,则需要从同步队列中删除,并检测新接上的前继节点的状态,若还是为CANCELLED ,还需要重复上述步骤
              * 一直往队列头部回溯直到找到一个状态不为CANCELLED的结点,将当前节点node挂在这个结点的后面。
              */
             do {
@@ -824,9 +825,8 @@ public abstract class AbstractQueuedSynchronizer
             } while (pred.waitStatus > 0);
             pred.next = node;
         } else {
-            /*
-             * 到这一步,waitstatus只有可能有2种状态,一个是0,一个是PROPAGATE,无论是哪个都需要把当前节点的状态设置为SIGNAL
-             */
+            // 默认创建的节点的waitStatus都是0
+            // 到这一步,waitstatus只有可能有2种状态,一个是0,一个是PROPAGATE,无论是哪个都需要把当前节点的状态设置为SIGNAL
             compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
         }
         return false;
@@ -878,13 +878,13 @@ public abstract class AbstractQueuedSynchronizer
                 final Node p = node.predecessor();
                 //如果前驱节点为头结点且尝试获取锁成功
                 if (p == head && tryAcquire(arg)) {
-                    setHead(node);  //将当前结点设置为队列头结点
+                    setHead(node);  //将当前结点设置为队列头结点,并且修改节点的前驱节点和线程为null,相当于设置当前节点为空节点
                     p.next = null; // help GC
                     failed = false;  //
                     return interrupted;
                 }
                 /*
-                 *就是确保当前结点的前驱结点的状态为SIGNAL,
+                 * 就是确保当前结点的前驱结点的状态为SIGNAL,
                  * SIGNAL意味着线程释放锁后会唤醒后面阻塞的线程。毕竟,只有确保能够被唤醒，当前线程才能放心的阻塞。
                  */
                 if (shouldParkAfterFailedAcquire(p, node) &&    //判断是否要阻塞当前线程
@@ -1216,9 +1216,10 @@ public abstract class AbstractQueuedSynchronizer
      *        can represent anything you like.
      */
     public final void acquire(int arg) {
-
-        if (!tryAcquire(arg) &&        //当前线程尝试获取锁,若获取成功返回true,否则false
-            acquireQueued(addWaiter(Node.EXCLUSIVE), arg))  //只有当前线程获取锁失败才会执行者这部分代码
+        // 当前线程尝试获取锁,若获取成功返回true,否则false
+        // 只有当前线程获取锁失败时，执行acquireQueued方法
+        if (!tryAcquire(arg) &&
+            acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
             selfInterrupt();
     }
 
@@ -1653,6 +1654,7 @@ public abstract class AbstractQueuedSynchronizer
      * @return true if is reacquiring
      */
     final boolean isOnSyncQueue(Node node) {
+        // 如果节点状态为阻塞或节点前驱为空时，表示不在同步队列
         if (node.waitStatus == Node.CONDITION || node.prev == null)
             return false;
         if (node.next != null) // If has successor, it must be on queue
@@ -1744,6 +1746,7 @@ public abstract class AbstractQueuedSynchronizer
         boolean failed = true;
         try {
             int savedState = getState();
+            // 释放锁，并且唤醒等待队列中的下一个阻塞节点
             if (release(savedState)) {
                 failed = false;
                 return savedState;
@@ -1870,17 +1873,22 @@ public abstract class AbstractQueuedSynchronizer
          * @return its new wait node
          */
         private Node addConditionWaiter() {
+            // 获取等待队列的尾节点
             Node t = lastWaiter;
             // If lastWaiter is cancelled, clean out.
+            // 如果尾节点不为空且状态不为阻塞时
             if (t != null && t.waitStatus != Node.CONDITION) {
                 unlinkCancelledWaiters();
                 t = lastWaiter;
             }
+            // 将当前节点包装为Node,且状态为阻塞
             Node node = new Node(Thread.currentThread(), Node.CONDITION);
+            // t为当前等待队列中最后一个阻塞状态节点的指针，将当前节点加入到等待队列中
             if (t == null)
                 firstWaiter = node;
             else
                 t.nextWaiter = node;
+            // 设置当前节点为最后一个的节点，并且返回当前节点
             lastWaiter = node;
             return node;
         }
@@ -2056,10 +2064,14 @@ public abstract class AbstractQueuedSynchronizer
         public final void await() throws InterruptedException {
             if (Thread.interrupted())
                 throw new InterruptedException();
+            // 1. 将当前线程包装成Node，尾插入到等待队列中
             Node node = addConditionWaiter();
+            // 2. 释放当前线程所占用的lock，在释放的过程中会唤醒同步队列中的下一个节点
             int savedState = fullyRelease(node);
             int interruptMode = 0;
+            // 当当前节点不在同步队列中时，执行循环操作
             while (!isOnSyncQueue(node)) {
+                // 对当前线程进行阻塞操作
                 LockSupport.park(this);
                 if ((interruptMode = checkInterruptWhileWaiting(node)) != 0)
                     break;
